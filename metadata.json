@@ -1,0 +1,6 @@
+{
+  "name": "Saifix AI",
+  "description": "Real-time voice-to-voice AI companion with a futuristic pink RGB interface, Hinglish and multilingual fluency, live camera vision, and instant browser actions.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

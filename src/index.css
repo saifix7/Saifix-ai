@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Outfit", system-ui, -apple-system, sans-serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    min-height: 100dvh;
+    margin: 0;
+    padding: 0;
+    overflow-x: hidden;
+    font-family: var(--font-sans);
+    background-color: #0d040c;
+    color: #fff1f7;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@keyframes rgb-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rgb-spin-reverse {
+  0% {
+    transform: rotate(360deg);
+  }
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes ambient-breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.65;
+  }
+  100% {
+    transform: scale(1.48);
+    opacity: 0;
+  }
+}
+
+.animate-rgb-spin {
+  animation: rgb-spin 7s linear infinite;
+}
+
+.animate-rgb-spin-fast {
+  animation: rgb-spin 2.8s linear infinite;
+}
+
+.animate-rgb-spin-reverse {
+  animation: rgb-spin-reverse 11s linear infinite;
+}
+
+.animate-ambient-breathe {
+  animation: ambient-breathe 5.5s ease-in-out infinite;
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 2.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rgb-spin,
+  .animate-rgb-spin-fast,
+  .animate-rgb-spin-reverse,
+  .animate-ambient-breathe,
+  .animate-pulse-ring {
+    animation: none !important;
+  }
+}
