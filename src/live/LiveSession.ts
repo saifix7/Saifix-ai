@@ -35,6 +35,9 @@ export interface LiveSessionCallbacks {
     enabled: boolean
   ) => Promise<{ ok: boolean; error?: string }>;
   onScheduleTimer?: (seconds: number, label: string) => void;
+  onScreenShareToggle?: (
+    enabled: boolean
+  ) => Promise<{ ok: boolean; error?: string }>;
 }
 
 export class LiveSession {
@@ -95,6 +98,12 @@ export class LiveSession {
   public sendVideoFrame(base64Jpeg: string): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.ready) {
       this.ws.send(JSON.stringify({ type: "video", data: base64Jpeg }));
+    }
+  }
+
+  public sendEventText(text: string): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.ready) {
+      this.ws.send(JSON.stringify({ type: "event", text }));
     }
   }
 
@@ -263,6 +272,7 @@ export class LiveSession {
           onSetMute: (muted) => this.setMuted(muted),
           onWakeLockChange: this.callbacks.onWakeLockChange,
           onScheduleTimer: this.callbacks.onScheduleTimer,
+          onScreenShareToggle: this.callbacks.onScreenShareToggle,
         })
       )
     );

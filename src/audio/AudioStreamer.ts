@@ -78,6 +78,8 @@ export class AudioStreamer {
   private inputAnalyser: AnalyserNode | null = null;
   private outputAnalyser: AnalyserNode | null = null;
   private outputGainNode: GainNode | null = null;
+  private keepAliveOsc: OscillatorNode | null = null;
+  private keepAliveGain: GainNode | null = null;
   private mediaStream: MediaStream | null = null;
   private sourceNode: MediaStreamAudioSourceNode | null = null;
   private workletNode: AudioWorkletNode | null = null;
@@ -114,9 +116,60 @@ export class AudioStreamer {
       this.outputGainNode.gain.value = this.outputVolume;
       this.outputAnalyser.connect(this.outputGainNode);
       this.outputGainNode.connect(this.outputCtx.destination);
+      this.startBackgroundKeepAlive();
     }
     if (this.outputCtx.state === "suspended") {
       await this.outputCtx.resume();
+    }
+  }
+
+  private startBackgroundKeepAlive(): void {
+    if (!this.outputCtx || this.keepAliveOsc) return;
+    try {
+      const osc = this.outputCtx.createOscillator();
+      const gain = this.outputCtx.createGain();
+      osc.frequency.value = 1;
+      gain.gain.value = 0.00001;
+      osc.connect(gain);
+      gain.connect(this.outputCtx.destination);
+      osc.start();
+      this.keepAliveOsc = osc;
+      this.keepAliveGain = gain;
+    } catch {
+      // Ignore if AudioContext cannot start background oscillator
+    }
+  }
+
+  public setMediaSessionMeta(
+    title: string,
+    artist: string,
+    onStop?: () => void
+  ): void {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
+      return;
+    }
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title,
+        artist,
+        album: "Saifix AI Live",
+        artwork: [
+          { src: "/pwa-192x192.png", sizes: "192x192", type: "image/png" },
+          { src: "/pwa-512x512.png", sizes: "512x512", type: "image/png" },
+        ],
+      });
+      navigator.mediaSession.playbackState = "playing";
+      navigator.mediaSession.setActionHandler("play", () => {
+        void this.preparePlayback();
+      });
+      navigator.mediaSession.setActionHandler("pause", () => {
+        this.interrupt();
+      });
+      if (onStop) {
+        navigator.mediaSession.setActionHandler("stop", onStop);
+      }
+    } catch {
+      // Ignore browsers without full MediaSession support
     }
   }
 
@@ -461,6 +514,26 @@ export class AudioStreamer {
         // Ignore
       }
       this.inputCtx = null;
+    }
+
+    if (this.keepAliveOsc) {
+      try {
+        this.keepAliveOsc.stop();
+        this.keepAliveOsc.disconnect();
+        this.keepAliveGain?.disconnect();
+      } catch {
+        // Ignore
+      }
+      this.keepAliveOsc = null;
+      this.keepAliveGain = null;
+    }
+
+    if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+      try {
+        navigator.mediaSession.playbackState = "none";
+      } catch {
+        // Ignore
+      }
     }
 
     if (this.outputCtx) {

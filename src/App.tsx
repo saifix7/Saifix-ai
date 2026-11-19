@@ -3,6 +3,8 @@ import {
   Hand,
   Mic,
   MicOff,
+  Monitor,
+  MonitorOff,
   Palette,
   PhoneOff,
   Shirt,
@@ -10,14 +12,21 @@ import {
   Users,
   Video,
   VideoOff,
+  WifiOff,
 } from "lucide-react";
 import { CameraStreamer } from "./camera/CameraStreamer";
+import { ScreenStreamer } from "./camera/ScreenStreamer";
 import { ActionBanner } from "./components/ActionBanner";
 import { CameraPreview } from "./components/CameraPreview";
 import { RealisticAvatar } from "./components/RealisticAvatar";
 import { AVATAR_CATALOG, SettingsModal } from "./components/SettingsModal";
 import { VoiceOrb } from "./components/VoiceOrb";
 import { LiveSession } from "./live/LiveSession";
+import {
+  isRunningInsideNativeApk,
+  type NativeBridgeEvent,
+} from "./native/androidBridge";
+import { useOnlineStatus } from "./pwa/usePWAInstall";
 import type {
   AvatarId,
   AvatarMood,
@@ -118,12 +127,15 @@ export default function App() {
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraFacing, setCameraFacing] = useState<CameraFacing>("user");
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [screenActive, setScreenActive] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [actionBanner, setActionBanner] =
     useState<BrowserActionNotification | null>(null);
+  const isOnline = useOnlineStatus();
 
   const sessionRef = useRef<LiveSession | null>(null);
   const cameraStreamerRef = useRef<CameraStreamer | null>(null);
+  const screenStreamerRef = useRef<ScreenStreamer | null>(null);
   const bannerTimerRef = useRef<number | null>(null);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const countdownTimersRef = useRef<number[]>([]);
@@ -151,6 +163,11 @@ export default function App() {
     setCameraActive(false);
   }, []);
 
+  const stopScreenInternal = useCallback(() => {
+    screenStreamerRef.current?.stop();
+    setScreenActive(false);
+  }, []);
+
   const showActionBanner = useCallback(
     (action: BrowserActionNotification) => {
       setActionBanner(action);
@@ -170,6 +187,16 @@ export default function App() {
     });
     cameraStreamerRef.current = cameraStreamer;
 
+    const screenStreamer = new ScreenStreamer(
+      (base64Jpeg) => {
+        sessionRef.current?.sendVideoFrame(base64Jpeg);
+      },
+      () => {
+        setScreenActive(false);
+      }
+    );
+    screenStreamerRef.current = screenStreamer;
+
     const releaseWakeLock = async () => {
       const sentinel = wakeLockRef.current;
       wakeLockRef.current = null;
@@ -186,10 +213,31 @@ export default function App() {
       getConfig: () => configRef.current,
       onStateChange: (next) => {
         setSessionState(next);
+        const activeLabel =
+          AVATAR_CATALOG.find((a) => a.id === configRef.current.avatarId)
+            ?.label ?? "Saifix";
         if (next === "disconnected") {
           setAvatarMood(mapMoodPresetToVisual(configRef.current.moodPreset));
           stopCameraInternal();
+          stopScreenInternal();
           void releaseWakeLock();
+          if (isRunningInsideNativeApk()) {
+            window.SaifixNative?.setBackgroundService?.(false);
+          }
+        } else if (next === "listening" || next === "speaking") {
+          session
+            .getAudioStreamer()
+            .setMediaSessionMeta(`${activeLabel} Live`, "Saifix AI", () => {
+              stopCameraInternal();
+              stopScreenInternal();
+              void session.disconnect();
+            });
+          if (isRunningInsideNativeApk()) {
+            window.SaifixNative?.setBackgroundService?.(
+              true,
+              `${activeLabel} Live`
+            );
+          }
         }
       },
       onMutedChange: setIsMuted,
@@ -277,10 +325,51 @@ export default function App() {
         }, seconds * 1000);
         countdownTimersRef.current.push(timerId);
       },
+      onScreenShareToggle: async (enabled: boolean) => {
+        if (!enabled) {
+          stopScreenInternal();
+          return { ok: true };
+        }
+        try {
+          await screenStreamer.start();
+          setScreenActive(true);
+          return { ok: true };
+        } catch (err: unknown) {
+          stopScreenInternal();
+          return {
+            ok: false,
+            error:
+              err instanceof Error
+                ? err.message
+                : "Could not start live screen sharing.",
+          };
+        }
+      },
     });
     sessionRef.current = session;
 
+    window.dispatchSaifixNativeEvent = (ev: NativeBridgeEvent) => {
+      if (ev.type === "incoming_call") {
+        const caller = ev.callerName || ev.callerNumber || "Unknown caller";
+        showActionBanner({
+          id: `${Date.now()}-call`,
+          title: "Incoming Call",
+          subtitle: caller,
+          kind: "phone",
+        });
+        if (typeof navigator.vibrate === "function") {
+          navigator.vibrate([250, 100, 250]);
+        }
+        if (sessionRef.current && sessionRef.current.getState() !== "disconnected") {
+          sessionRef.current.sendEventText(
+            `[INCOMING CALL ALERT] User's phone is ringing right now from: ${caller}. Immediately alert the user out loud in your natural voice before they miss the call!`
+          );
+        }
+      }
+    };
+
     return () => {
+      delete window.dispatchSaifixNativeEvent;
       if (bannerTimerRef.current !== null) {
         window.clearTimeout(bannerTimerRef.current);
       }
@@ -290,9 +379,10 @@ export default function App() {
       countdownTimersRef.current = [];
       void releaseWakeLock();
       cameraStreamer.stop();
+      screenStreamer.stop();
       void session.disconnect();
     };
-  }, [showActionBanner, stopCameraInternal, triggerWave]);
+  }, [showActionBanner, stopCameraInternal, stopScreenInternal, triggerWave]);
 
   const reconnectLiveIfActive = useCallback(() => {
     window.setTimeout(() => {
@@ -389,8 +479,37 @@ export default function App() {
 
   const handleDisconnect = useCallback(() => {
     stopCameraInternal();
+    stopScreenInternal();
     void sessionRef.current?.disconnect();
-  }, [stopCameraInternal]);
+  }, [stopCameraInternal, stopScreenInternal]);
+
+  const handleToggleScreenShare = useCallback(async () => {
+    const screen = screenStreamerRef.current;
+    if (!screen) return;
+
+    if (screenActive) {
+      stopScreenInternal();
+      return;
+    }
+
+    setErrorMsg(null);
+    try {
+      await screen.start();
+      setScreenActive(true);
+      if (sessionState === "disconnected") {
+        void sessionRef.current?.connect();
+      }
+    } catch (err: unknown) {
+      stopScreenInternal();
+      const raw = err instanceof Error ? err.message : "";
+      setErrorMsg(
+        raw.toLowerCase().includes("permission") ||
+          raw.toLowerCase().includes("notallowed")
+          ? "Screen sharing permission was cancelled."
+          : raw || "Could not start live screen sharing on this device."
+      );
+    }
+  }, [screenActive, sessionState, stopScreenInternal]);
 
   const handleToggleCamera = useCallback(async () => {
     const camera = cameraStreamerRef.current;
@@ -570,12 +689,23 @@ export default function App() {
                 : sessionState === "listening"
                   ? isMuted
                     ? "Tap mic or unmute to continue"
-                    : cameraActive
-                      ? "Camera live — just talk naturally"
-                      : "Just talk naturally"
+                    : screenActive && cameraActive
+                      ? "Screen & Camera live — just talk naturally"
+                      : screenActive
+                        ? "Screen live — just talk naturally"
+                        : cameraActive
+                          ? "Camera live — just talk naturally"
+                          : "Just talk naturally"
                   : "Opening real-time audio channel"}
           </p>
         </div>
+
+        {!isOnline && (
+          <div className="fixed top-16 left-1/2 -translate-x-1/2 z-30 px-3 py-1.5 rounded-xl bg-amber-950/90 border border-amber-400/40 text-amber-100 text-xs font-medium flex items-center gap-1.5 shadow-lg">
+            <WifiOff className="w-3.5 h-3.5 text-amber-300" />
+            <span>Offline — reconnect to start live voice</span>
+          </div>
+        )}
 
         {/* Floating PiP Live Camera Preview */}
         {cameraActive && cameraStream && (
@@ -622,14 +752,14 @@ export default function App() {
 
       {/* Bottom Thumb-Zone RGB Mic & Call Controls */}
       <footer className="relative z-10 w-full max-w-6xl mx-auto px-3 sm:px-8 pb-[max(0.9rem,env(safe-area-inset-bottom))] pt-1">
-        <div className="flex items-center justify-center gap-2 sm:gap-4">
+        <div className="flex items-center justify-center gap-1.5 sm:gap-4">
           {isActive && (
             <button
               type="button"
               onClick={() => sessionRef.current?.toggleMute()}
               disabled={sessionState === "connecting"}
               aria-label={isMuted ? "Unmute microphone" : "Mute microphone"}
-              className={`min-h-[48px] min-w-[48px] px-3 sm:px-4 py-2.5 rounded-2xl border text-xs sm:text-sm font-medium flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 ${
+              className={`min-h-[46px] min-w-[46px] px-2.5 sm:px-4 py-2.5 rounded-2xl border text-xs sm:text-sm font-medium flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 ${
                 isMuted
                   ? "bg-pink-500/25 border-pink-400/50 text-pink-50"
                   : "bg-white/[0.05] hover:bg-white/[0.09] border-pink-300/20 text-pink-100"
@@ -650,7 +780,7 @@ export default function App() {
             type="button"
             onClick={triggerWave}
             aria-label="Wave and shake hand"
-            className="min-h-[48px] min-w-[48px] px-3 sm:px-4 py-2.5 rounded-2xl bg-white/[0.05] hover:bg-white/[0.09] border border-pink-300/20 text-xs sm:text-sm font-medium text-pink-100 flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400"
+            className="min-h-[46px] min-w-[46px] px-2.5 sm:px-4 py-2.5 rounded-2xl bg-white/[0.05] hover:bg-white/[0.09] border border-pink-300/20 text-xs sm:text-sm font-medium text-pink-100 flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400"
           >
             <Hand className="w-4 h-4 text-pink-300" />
             <span className="hidden sm:inline">Wave</span>
@@ -668,7 +798,7 @@ export default function App() {
             type="button"
             onClick={() => void handleToggleCamera()}
             aria-label={cameraActive ? "Turn off camera" : "Open live camera"}
-            className={`min-h-[48px] min-w-[48px] px-3 sm:px-4 py-2.5 rounded-2xl border text-xs sm:text-sm font-medium flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 ${
+            className={`min-h-[46px] min-w-[46px] px-2.5 sm:px-4 py-2.5 rounded-2xl border text-xs sm:text-sm font-medium flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 ${
               cameraActive
                 ? "bg-pink-500/25 border-pink-400/50 text-pink-50"
                 : "bg-white/[0.05] hover:bg-white/[0.09] border-pink-300/20 text-pink-100"
@@ -684,12 +814,32 @@ export default function App() {
             </span>
           </button>
 
+          <button
+            type="button"
+            onClick={() => void handleToggleScreenShare()}
+            aria-label={screenActive ? "Stop sharing screen" : "Share screen"}
+            className={`min-h-[46px] min-w-[46px] px-2.5 sm:px-4 py-2.5 rounded-2xl border text-xs sm:text-sm font-medium flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-400 ${
+              screenActive
+                ? "bg-pink-500/25 border-pink-400/50 text-pink-50"
+                : "bg-white/[0.05] hover:bg-white/[0.09] border-pink-300/20 text-pink-100"
+            }`}
+          >
+            {screenActive ? (
+              <Monitor className="w-4 h-4 text-pink-200" />
+            ) : (
+              <MonitorOff className="w-4 h-4 text-pink-300" />
+            )}
+            <span className="hidden sm:inline">
+              {screenActive ? "Screen On" : "Screen"}
+            </span>
+          </button>
+
           {isActive && (
             <button
               type="button"
               onClick={handleDisconnect}
               aria-label="End voice session"
-              className="min-h-[48px] min-w-[48px] px-3 sm:px-4 py-2.5 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/35 text-xs sm:text-sm font-medium text-rose-100 flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400"
+              className="min-h-[46px] min-w-[46px] px-2.5 sm:px-4 py-2.5 rounded-2xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/35 text-xs sm:text-sm font-medium text-rose-100 flex items-center justify-center gap-1.5 transition-all duration-150 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400"
             >
               <PhoneOff className="w-4 h-4 text-rose-300" />
               <span className="hidden sm:inline">End</span>

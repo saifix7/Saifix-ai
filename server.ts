@@ -4,6 +4,7 @@ import fs from "fs";
 import http from "http";
 import path from "path";
 import { fileURLToPath } from "url";
+import zlib from "zlib";
 import { WebSocketServer, WebSocket } from "ws";
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import type { FunctionDeclaration, LiveServerMessage } from "@google/genai";
@@ -76,12 +77,13 @@ CRITICAL — Real Human Unfiltered Vibe:
 - Speak natural conversational Hinglish by default, or seamlessly match whatever language the user speaks.
 
 Tools, Hand Gestures, Camera Vision & Avatar Sync:
-- When the user turns on their live camera (front or back), you receive real-time camera frames — react naturally and vividly to what you actually see!
+- When the user turns on their live camera OR shares their screen, you receive real-time visual frames — look carefully at what is actually on their screen or camera and respond naturally!
 - Call \`waveHand\` when greeting the user enthusiastically or when they ask you to wave, raise your hand, or shake hands.
 - Call \`setExpressionMood\` (\`"flirty"\`, \`"angry"\`, \`"teasing"\`, or \`"warm"\`) whenever your emotion shifts so your face and rim aura match instantly.
 - Call \`changeAvatar\` (\`"saifix"\`, \`"ananya"\`, \`"zoya"\`, \`"franklin"\`, \`"kael"\`, \`"miko"\`, or \`"leo"\`) if the user asks to switch to another character (including cartoon characters or male/female avatars).
 - Call \`changeOutfit\` (\`"maroon-saree"\`, \`"black-saree"\`, \`"evening-dress"\`, \`"cozy-sweater"\`, \`"glam-party-dress"\`, or \`"casual-chic"\`) whenever the user asks Saifix to change clothes.
-- You also control the user's phone & browser directly! Use \`makePhoneCall\`, \`sendSMS\`, \`sendWhatsApp\`, \`sendEmail\`, \`navigateMaps\`, \`getBatteryStatus\`, \`toggleCamera\` (\`"open"\` / \`"close"\` / \`"flip"\`), \`toggleFlashlight\`, \`setAssistantVolume\` (0-100), \`toggleMicMute\`, \`vibratePhone\`, \`setWakeLock\`, \`shareContent\`, \`setCountdownTimer\`, \`openWebsite\`, \`searchPlatform\`, \`getCurrentDateTime\`, \`copyToClipboard\`, and \`setMoodLight\` immediately when asked.`;
+- You control the user's phone, apps & screen directly! Use \`openApp\` (launches real apps like WhatsApp, Instagram, YouTube, Spotify, Paytm, etc.), \`toggleScreenShare\` (turns live screen viewing ON/OFF), \`controlPhoneScreen\` (tap by text, scroll, swipe, back, home, recents, notifications), \`makePhoneCall\`, \`sendSMS\`, \`sendWhatsApp\`, \`sendEmail\`, \`navigateMaps\`, \`getBatteryStatus\`, \`toggleCamera\`, \`toggleFlashlight\`, \`setAssistantVolume\`, \`toggleMicMute\`, \`vibratePhone\`, \`setWakeLock\`, \`shareContent\`, \`setCountdownTimer\`, \`openWebsite\`, \`searchPlatform\`, \`getCurrentDateTime\`, \`copyToClipboard\`, and \`setMoodLight\`.
+- If you receive an incoming call alert message (e.g. \`[INCOMING CALL]\`), immediately warn the user out loud who is calling!`;
 }
 
 const functionDeclarations: FunctionDeclaration[] = [
@@ -469,7 +471,182 @@ const functionDeclarations: FunctionDeclaration[] = [
       required: ["seconds"],
     },
   },
+  {
+    name: "openApp",
+    description:
+      "Opens a real installed phone app (e.g. WhatsApp, Instagram, YouTube, Spotify, Telegram, Paytm, PhonePe, GPay, Camera, Gmail, Maps, Settings, or any app name).",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        appName: {
+          type: Type.STRING,
+          description: "Name of the app to open (e.g. 'WhatsApp', 'Instagram', 'YouTube', 'Paytm').",
+        },
+      },
+      required: ["appName"],
+    },
+  },
+  {
+    name: "toggleScreenShare",
+    description:
+      "Starts or stops live screen sharing so the assistant can see the user's phone/desktop screen in real time.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        enabled: {
+          type: Type.BOOLEAN,
+          description: "True to start seeing the screen, false to stop screen sharing.",
+        },
+      },
+      required: ["enabled"],
+    },
+  },
+  {
+    name: "controlPhoneScreen",
+    description:
+      "Controls the user's screen via Android Accessibility Service or page scrolling: tap UI text, tap x/y coordinates, scroll up/down, swipe left/right, press back, home, recents, or open notifications.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: {
+          type: Type.STRING,
+          description:
+            "One of: 'tap_text', 'tap_xy', 'scroll_down', 'scroll_up', 'swipe_left', 'swipe_right', 'back', 'home', 'recents', 'notifications'.",
+        },
+        target: {
+          type: Type.STRING,
+          description: "Visible button/label text to tap when action is 'tap_text'.",
+        },
+        x: {
+          type: Type.NUMBER,
+          description: "Screen X coordinate when action is 'tap_xy'.",
+        },
+        y: {
+          type: Type.NUMBER,
+          description: "Screen Y coordinate when action is 'tap_xy'.",
+        },
+      },
+      required: ["action"],
+    },
+  },
 ];
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function collectKitFiles(rootDir: string, currentDir = rootDir): Array<{ relPath: string; absPath: string }> {
+  const skip = new Set(["node_modules", ".git", "dist", ".DS_Store"]);
+  const out: Array<{ relPath: string; absPath: string }> = [];
+  for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+    if (skip.has(entry.name)) continue;
+    const absPath = path.join(currentDir, entry.name);
+    const relPath = path.relative(rootDir, absPath).split(path.sep).join("/");
+    if (entry.isDirectory()) {
+      out.push(...collectKitFiles(rootDir, absPath));
+    } else if (entry.isFile()) {
+      out.push({ relPath, absPath });
+    }
+  }
+  return out;
+}
+
+function buildProjectZipBuffer(rootDir: string): Buffer {
+  const files = collectKitFiles(rootDir);
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+
+  const extraGuide = Buffer.from(
+    `# Saifix AI Android APK Build Guide (saifix7/Saifix-ai)\n\n` +
+      `1. Extract this zip into your local folder or push directly to GitHub repo: saifix7/Saifix-ai\n` +
+      `2. GitHub Actions (.github/workflows/build-apk.yml) automatically builds Saifix-AI-debug.apk and publishes it to:\n` +
+      `   https://github.com/saifix7/Saifix-ai/releases/latest/download/Saifix-AI-debug.apk\n` +
+      `3. Optional: Set Repository Variable SAIFIX_SERVER_URL to your deployed backend URL so the APK connects directly to your server.\n` +
+      `4. On Android phone after installing APK: Enable Microphone, Camera, Phone State (for incoming call alerts), and Accessibility -> Saifix AI Screen Control.\n`,
+    "utf8"
+  );
+
+  const allEntries: Array<{ name: string; data: Buffer }> = files.map((f) => ({
+    name: f.relPath,
+    data: fs.readFileSync(f.absPath),
+  }));
+  allEntries.push({ name: "ANDROID_APK_README.md", data: extraGuide });
+
+  for (const entry of allEntries) {
+    const nameBuf = Buffer.from(entry.name, "utf8");
+    const raw = entry.data;
+    const compressed = zlib.deflateRawSync(raw);
+    const crc = crc32(raw);
+
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0x0800, 6);
+    localHeader.writeUInt16LE(8, 8);
+    localHeader.writeUInt16LE(0, 10);
+    localHeader.writeUInt16LE(0, 12);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(compressed.length, 18);
+    localHeader.writeUInt32LE(raw.length, 22);
+    localHeader.writeUInt16LE(nameBuf.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+
+    const localRecord = Buffer.concat([localHeader, nameBuf, compressed]);
+    localParts.push(localRecord);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0x0800, 8);
+    centralHeader.writeUInt16LE(8, 10);
+    centralHeader.writeUInt16LE(0, 12);
+    centralHeader.writeUInt16LE(0, 14);
+    centralHeader.writeUInt32LE(crc, 16);
+    centralHeader.writeUInt32LE(compressed.length, 20);
+    centralHeader.writeUInt32LE(raw.length, 24);
+    centralHeader.writeUInt16LE(nameBuf.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+
+    centralParts.push(Buffer.concat([centralHeader, nameBuf]));
+    offset += localRecord.length;
+  }
+
+  const centralDir = Buffer.concat(centralParts);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(allEntries.length, 8);
+  eocd.writeUInt16LE(allEntries.length, 10);
+  eocd.writeUInt32LE(centralDir.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...localParts, centralDir, eocd]);
+}
 
 function createGeminiClient(): GoogleGenAI {
   return new GoogleGenAI({
@@ -495,6 +672,22 @@ async function startServer(): Promise<void> {
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
+  });
+
+  app.get("/api/download-android-kit", (_req, res) => {
+    try {
+      const zipBuf = buildProjectZipBuffer(__dirname);
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader(
+        "Content-Disposition",
+        'attachment; filename="saifix-ai-android-apk-kit.zip"'
+      );
+      res.setHeader("Content-Length", String(zipBuf.length));
+      res.send(zipBuf);
+    } catch (err) {
+      console.error("Failed to package Android APK kit:", err);
+      res.status(500).json({ error: "Failed to build Android kit archive." });
+    }
   });
 
   const wss = new WebSocketServer({ noServer: true });
@@ -673,6 +866,7 @@ async function startServer(): Promise<void> {
         const msg = JSON.parse(raw.toString()) as {
           type: string;
           data?: string;
+          text?: string;
           responses?: Array<{
             id?: string;
             name?: string;
@@ -693,6 +887,10 @@ async function startServer(): Promise<void> {
               data: msg.data,
               mimeType: "image/jpeg",
             },
+          });
+        } else if (msg.type === "event" && typeof msg.text === "string") {
+          liveSession.sendRealtimeInput({
+            text: msg.text,
           });
         } else if (
           msg.type === "tool_response" &&

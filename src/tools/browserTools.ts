@@ -1,3 +1,7 @@
+import {
+  executeNativeScreenControl,
+  launchRealApp,
+} from "../native/androidBridge";
 import type {
   AvatarId,
   AvatarMood,
@@ -94,6 +98,9 @@ export interface ToolExecutionContext {
     enabled: boolean
   ) => Promise<{ ok: boolean; error?: string }>;
   onScheduleTimer?: (seconds: number, label: string) => void;
+  onScreenShareToggle?: (
+    enabled: boolean
+  ) => Promise<{ ok: boolean; error?: string }>;
 }
 
 export async function executeBrowserTool(
@@ -591,6 +598,76 @@ export async function executeBrowserTool(
         name,
         response: { ok: true, seconds, label },
       };
+    }
+
+    case "openApp": {
+      const appName = String(args.appName ?? "").trim();
+      if (!appName) {
+        return {
+          id: call.id,
+          name,
+          response: { ok: false, error: "Please tell me which app to open." },
+        };
+      }
+      const res = launchRealApp(appName);
+      context.onActionNotify({
+        id: makeNotificationId(),
+        title: `Open ${res.label}`,
+        subtitle:
+          res.mode === "native-apk"
+            ? "Launched native app"
+            : res.mode === "android-intent"
+              ? "Opening Android app"
+              : "Opening app link",
+        url: res.url,
+        kind: "phone",
+      });
+      return {
+        id: call.id,
+        name,
+        response: res,
+      };
+    }
+
+    case "toggleScreenShare": {
+      const enabled = Boolean(args.enabled);
+      if (!context.onScreenShareToggle) {
+        return {
+          id: call.id,
+          name,
+          response: { ok: false, error: "Screen share unavailable." },
+        };
+      }
+      const res = await context.onScreenShareToggle(enabled);
+      if (res.ok) {
+        context.onActionNotify({
+          id: makeNotificationId(),
+          title: enabled ? "Screen Vision ON" : "Screen Vision OFF",
+          subtitle: enabled
+            ? "Watching live screen at 1 FPS"
+            : "Screen sharing stopped",
+          kind: "device",
+        });
+      }
+      return { id: call.id, name, response: res };
+    }
+
+    case "controlPhoneScreen": {
+      const action = String(args.action ?? "").trim();
+      const target =
+        typeof args.target === "string" ? args.target.trim() : undefined;
+      const x = typeof args.x === "number" ? args.x : undefined;
+      const y = typeof args.y === "number" ? args.y : undefined;
+      const res = executeNativeScreenControl({ action, target, x, y });
+      context.onActionNotify({
+        id: makeNotificationId(),
+        title: `Screen · ${action}`,
+        subtitle: res.ok
+          ? target || "Action executed"
+          : res.error || "Requires Android APK Accessibility",
+        kind: "device",
+      });
+      return { id: call.id, name, response: res };
     }
 
     case "openWebsite": {

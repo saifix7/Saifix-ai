@@ -1,5 +1,17 @@
-import { useEffect } from "react";
-import { Check, Mic, Sparkles, User, Users, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  Check,
+  Download,
+  Mic,
+  ShieldCheck,
+  Smartphone,
+  Sparkles,
+  User,
+  Users,
+  X,
+} from "lucide-react";
+import { isRunningInsideNativeApk } from "../native/androidBridge";
+import { usePWAInstall } from "../pwa/usePWAInstall";
 import type {
   AvatarId,
   AvatarOutfit,
@@ -121,6 +133,10 @@ export function SettingsModal({
   onSelectMood,
   onSelectVoice,
 }: SettingsModalProps) {
+  const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
+  const [showIosTip, setShowIosTip] = useState(false);
+  const isApk = isRunningInsideNativeApk();
+
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -329,6 +345,76 @@ export function SettingsModal({
               </div>
             </section>
           )}
+
+          {/* App Install (PWA) & Android APK Kit */}
+          <section>
+            <div className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-pink-200/75 mb-2.5">
+              <Smartphone className="w-3.5 h-3.5 text-pink-300" />
+              <span>App Install & Android APK</span>
+            </div>
+            <div className="rounded-2xl bg-white/[0.03] border border-pink-300/15 p-3.5 space-y-2.5">
+              {!isApk && !isInstalled && isInstallable && (
+                <button
+                  type="button"
+                  onClick={() => void install()}
+                  className="w-full min-h-[44px] px-3.5 py-2 rounded-xl bg-pink-500/25 hover:bg-pink-500/35 border border-pink-400/50 text-xs sm:text-sm font-medium text-rose-50 flex items-center justify-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <Smartphone className="w-4 h-4 text-pink-200" />
+                  <span>Install Web App (PWA)</span>
+                </button>
+              )}
+
+              {!isApk && !isInstalled && isIOS && !isInstallable && (
+                <div className="space-y-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowIosTip((prev) => !prev)}
+                    className="w-full min-h-[44px] px-3.5 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.09] border border-pink-300/20 text-xs sm:text-sm font-medium text-pink-100 flex items-center justify-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    <Smartphone className="w-4 h-4 text-pink-300" />
+                    <span>Add to iPhone Home Screen</span>
+                  </button>
+                  {showIosTip && (
+                    <p className="text-[11px] text-pink-200/75 px-1">
+                      Tap Safari&apos;s Share button, then choose &ldquo;Add to Home Screen&rdquo;.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {isApk && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.SaifixNative?.requestAccessibilitySettings?.()
+                  }
+                  className="w-full min-h-[44px] px-3.5 py-2 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-xs sm:text-sm font-medium text-emerald-100 flex items-center justify-center gap-2 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <ShieldCheck className="w-4 h-4 text-emerald-300" />
+                  <span>Enable Screen Control Permission</span>
+                </button>
+              )}
+
+              <a
+                href="/api/download-android-kit"
+                download="saifix-ai-android-apk-kit.zip"
+                className="w-full min-h-[44px] px-3.5 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] border border-pink-300/20 text-xs sm:text-sm font-medium text-pink-100 flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
+              >
+                <Download className="w-4 h-4 text-pink-300" />
+                <span>Download APK Source Kit (.zip)</span>
+              </a>
+
+              <p className="text-[11px] leading-relaxed text-pink-200/70">
+                Pre-configured for{" "}
+                <span className="text-pink-100/95 font-medium">saifix7/Saifix-ai</span>{" "}
+                with zero extra server setup. Push this project to{" "}
+                <span className="text-pink-100/90 font-medium">main</span>{" "}
+                (via GitHub Sync or git) to auto-generate{" "}
+                <span className="text-pink-100/90 font-medium">Saifix-AI-debug.apk</span>{" "}
+                in Releases.
+              </p>
+            </div>
+          </section>
         </div>
       </div>
     </div>

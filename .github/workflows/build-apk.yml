@@ -1,0 +1,94 @@
+name: Build Saifix AI Android APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-android-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install dependencies & build web bundle
+        run: |
+          npm install
+          npm run build
+
+      - name: Initialize Capacitor Android project
+        run: |
+          npm install --no-save @capacitor/core@^6.2.0 @capacitor/cli@^6.2.0 @capacitor/android@^6.2.0
+          npx cap add android
+          rm -f android/app/src/main/java/com/saifix/ai/MainActivity.java
+          cp -r android-native/app/src/main/* android/app/src/main/
+          npx cap sync android
+
+      - name: Configure Kotlin & JVM target 17 in Android Gradle
+        run: |
+          if ! grep -q "org.jetbrains.kotlin" android/build.gradle; then
+            sed -i 's/dependencies {/dependencies {\n        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24"/' android/build.gradle
+          fi
+          if ! grep -q "kotlin-android" android/app/build.gradle; then
+            sed -i 's/apply plugin: .com.android.application./apply plugin: "com.android.application"\napply plugin: "kotlin-android"/' android/app/build.gradle
+          fi
+          if ! grep -q "kotlin-stdlib" android/app/build.gradle; then
+            sed -i 's/dependencies {/dependencies {\n    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"/' android/app/build.gradle
+          fi
+          if ! grep -q "kotlinOptions" android/app/build.gradle; then
+            cat << 'EOF' >> android/app/build.gradle
+
+          android {
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          EOF
+          fi
+
+      - name: Build Debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Prepare APK artifact
+        run: |
+          mkdir -p release-apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk release-apk/Saifix-AI-debug.apk
+
+      - name: Upload APK Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Saifix-AI-debug.apk
+          path: release-apk/Saifix-AI-debug.apk
+
+      - name: Publish Direct APK Download Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-apk
+          name: Saifix AI Android APK (Latest)
+          files: release-apk/Saifix-AI-debug.apk
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
